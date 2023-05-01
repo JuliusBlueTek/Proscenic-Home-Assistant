@@ -1,0 +1,18 @@
+{
+  "config": {
+    "error": {
+      "auth": "The auth token provided is not valid.",
+      "invalid_path": "The path provided is not valid. Should be in the format `user/repo-name`."
+    },
+    "step": {
+      "user": {
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        },
+        "description": "Enter your Procenic username (usally email) and password",
+        "title": "Authentication"
+      }
+    }
+  }
+}
