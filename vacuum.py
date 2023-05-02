@@ -14,12 +14,12 @@ from homeassistant.helpers.icon import icon_for_battery_level
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.const import CONF_USERNAME, CONF_API_TOKEN, CONF_DEVICES, CONF_PASSWORD
 
-from .const import DOMAIN
+from .const import DOMAIN, PROSCENICHOME
 from .proscenicapis import *
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=60)
+SCAN_INTERVAL = timedelta(seconds=90)
 
 async def async_setup_entry(
     hass: core.HomeAssistant,
@@ -28,9 +28,7 @@ async def async_setup_entry(
 ) -> None:
     """Setup sensors from a config entry created in the integrations UI."""
     config = hass.data[DOMAIN][config_entry.entry_id]
-    proscenic_home = ProscenicHome(config_entry.data[CONF_USERNAME], config_entry.data[CONF_PASSWORD], None)
-    await proscenic_home.connect()
-    vacuum = [ProscenicVacuum(proscenic_home)]
+    vacuum = [ProscenicVacuum(config['device'])]
     async_add_entities(vacuum, update_before_add=True)
 
 class ProscenicVacuum(VacuumEntity):
@@ -61,6 +59,8 @@ class ProscenicVacuum(VacuumEntity):
         return
 
     async def async_update(self) -> None:
+        if not await self.vacuum.connect():
+            await self.proscenic_home.connect()
         await self.vacuum.update_state()
         if self.vacuum.status and 'mode' in self.vacuum.status:
             self._attr_status = self.vacuum.status['mode']
@@ -76,7 +76,7 @@ class ProscenicVacuum(VacuumEntity):
             self._error = None
         else:
             self._error = error
-        
+
     @property
     def unique_id(self) -> str:
         """Return an unique ID."""
@@ -166,12 +166,19 @@ class ProscenicVacuum(VacuumEntity):
         """Turn the vacuum off stopping the cleaning and returning home."""
         await self.async_return_to_base()
 
-    def send_command(
+    async def async_send_command(
         self,
         command: str,
         params: dict[str, Any] | list[Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Send a command to a vacuum cleaner."""
-        return
+        if command == 'app_segment_clean':
+            duplicates_removed = list(dict.fromkeys(params))
+            string_list = ','.join(str(e) for e in duplicates_removed)
+            await self.vacuum.clean_segment(string_list)
+            self.vacuum.status['mode'] = 'sweep'
+            self.schedule_update_ha_state()
+            
+
 

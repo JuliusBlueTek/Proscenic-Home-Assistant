@@ -7,6 +7,6 @@
     "issue_tracker": "https://github.com/JuliusBlueTek/Proscenic-Home-Assistant/issues",
     "codeowners": ["@JuliusBlueTek"],
     "dependencies": [],
-    "requirements": [],
+    "requirements": ["Pillow", "pycryptodome"],
     "iot_class": "cloud_polling"
   }
