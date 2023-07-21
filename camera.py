@@ -30,7 +30,7 @@ async def async_setup_entry(
 
 class ProscenicMapCamera(Camera):
     """Representation of a local file camera."""
-    _attr_frame_interval = 20 # seconds
+    _attr_frame_interval = 5 # seconds
 
     def __init__(self, proscenic_home):
         """Initialize Local File Camera component."""
@@ -42,8 +42,8 @@ class ProscenicMapCamera(Camera):
 
     async def async_camera_image(self, width = None, height = None):
         """Return image response."""
-        if self.vacuum.status['mode'] == "sweep":
-            await self.vacuum.update_state()
+        
+        await self.vacuum.get_paths()
         return self.vacuum.get_map()
 
     @property

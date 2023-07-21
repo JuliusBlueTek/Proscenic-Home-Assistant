@@ -8,8 +8,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_registry import (
-    async_entries_for_config_entry,
-    async_get_registry,
+    async_entries_for_config_entry
 )
 import voluptuous as vol
 

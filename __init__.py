@@ -44,6 +44,7 @@ async def options_update_listener(
 async def async_unload_entry(
     hass: core.HomeAssistant, config_entry: config_entries.ConfigEntry
 ) -> bool:
+    hass.data[DOMAIN][config_entry.entry_id]['device'].disconnect()
     """Unload a config entry."""
     unload_ok = all(
         await asyncio.gather(

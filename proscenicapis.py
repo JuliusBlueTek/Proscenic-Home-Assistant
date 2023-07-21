@@ -11,9 +11,12 @@ from Crypto.Util.Padding import unpad
 import json
 import hashlib
 
+from threading import Thread
+
 from PIL import Image, ImageDraw
 
 from ._block import decompress as lz4_decompress
+
 #import lz4.block
 #lz4_decompress = lz4.block.decompress
 
@@ -52,6 +55,10 @@ class ProscenicHome:
                         self.vacuums.append(vacuum)
                         return
                     self.vacuums.append(vacuum)
+
+    def disconnect(self):
+        for vacuum in self.vacuums:
+            vacuum.disconnect()
 
     async def get_devices(self):
         url = self.url + '/user/getEquips/' + self.username
@@ -150,15 +157,43 @@ class ProscenicHomeVacuum:
         self.serial = device['sn']
         self.name = device['name']
         self.uid = device['sn']
+
+        self.status = {
+            'mode': 'charge',
+            'elec': 0
+            }
+
         self.socket_ip = None
         self.socket_prot = None
-        self.status = {'mode': 'charge'}
+        self.socket_thread = None
+        self.socket_loop = None
+        self.keep_alive = True
+
         self.map_data = None
         self.path_data = None
+        self.current_path_id = None
+        self.path_position_array = []
+        self.pil_map_image = None
+        self.map_bytes = None
+        self.update_map = True
+        self.update_robot_map = True
+
+        self.listner = []
+    
+    def subcribe(self, subscriber):
+        self.listner.append(subscriber)
+
+    def _call_listners(self):
+        for listner in self.listner:
+            listner(self)
 
     async def connect(self):
         did_connect = await self.update_sockets_ip()
         return did_connect
+
+    async def disconnect(self):
+        self.socket_loop.close()
+        self.keep_alive = False
 
     async def update_sockets_ip(self):
         sockets = await self.get_socket_address()
@@ -169,10 +204,47 @@ class ProscenicHomeVacuum:
         self.socket_prot = sockets['data']['addr_list'][0]['port']
         return True
 
+    def start_thread_connect_socket(self, message_string, socket_ip, socket_port, socket_callback):
+        self.socket_thread = Thread(
+            target=self.start_connect_socket,
+            args=(message_string, socket_ip, socket_port, socket_callback)
+        )
+        self.socket_thread.start()
+
+    def start_connect_socket(self, message_string, socket_ip, socket_port, socket_callback):
+        self.socket_loop = asyncio.new_event_loop()
+        task = self.connect_socket(message_string, socket_ip, socket_port, socket_callback)
+        self.socket_loop.run_until_complete(task)
+
+    async def connect_socket(self, message_string, socket_ip, socket_port, socket_callback):
+        reader, writer = await asyncio.open_connection(socket_ip, socket_port)
+        writer.write(message_string.encode())
+        await writer.drain()
+        reader._eof = False
+        while True:
+            try:
+                byte_data = await reader.readuntil(b'#\t#')
+                string = byte_data.decode('utf-8')
+                string = string.split(EOL)[0]
+                try:
+                    await socket_callback(string)
+                except ValueError:
+                    continue
+            except Exception as ex:
+                writer.close()
+                if not self.connect():
+                    await self.proscenic_home.get_token()
+                    await self.update_sockets_ip()
+                    await asyncio.sleep(60)
+                reader, writer = await asyncio.open_connection(socket_ip, socket_port)
+                writer.write(message_string.encode())
+                await writer.drain()
+
     async def update_state(self):
         if not self.socket_ip:
             await self.update_sockets_ip()
-
+        if self.socket_thread is not None and self.socket_thread.is_alive():
+            return
         infoType70001 = json.dumps({
             "data":
                 {
@@ -191,33 +263,30 @@ class ProscenicHomeVacuum:
             "infoType": 70003
         }) + EOL
 
-        #await self.get_info()
-        #await asyncio.sleep(2)
-
-        json_data_list = await self.proscenic_home.send_socket_message(
+        self.start_thread_connect_socket(
             infoType70001,
             self.socket_ip,
             self.socket_prot,
-            4
+            self.process_encrypted_data
         )
 
-        for json_data in json_data_list:
-            if 'encrypt' in json_data:
-                is_encrypted = json_data['encrypt']
-                if is_encrypted == 1:
-                    await self.process_encrypted_data(json_data['data'])
-
     async def process_encrypted_data(self, encrypted_data):
+        json_data = json.loads(encrypted_data)
+        if 'encrypt' not in json_data:
+            return
+        json_encrypted_data = json_data['data']
+        decrypted_data = None
         try:
-            decrypted_data = self.proscenic_home.decrypt(encrypted_data, self.proscenic_home.token)
+            decrypted_data = self.proscenic_home.decrypt(json_encrypted_data, self.proscenic_home.token)
         except ValueError:
             if not await self.connect():
                 await self.proscenic_home.get_token()
                 try:
-                    decrypted_data = self.proscenic_home.decrypt(encrypted_data, self.proscenic_home.token)
+                    decrypted_data = self.proscenic_home.decrypt(json_encrypted_data, self.proscenic_home.token)
                 except ValueError:
                     return
-
+        if decrypted_data == None:
+            return
         decrypted_json = json.loads(decrypted_data)
         info_type = decrypted_json['infoType']
         if info_type == 20001:
@@ -226,15 +295,35 @@ class ProscenicHomeVacuum:
             self.update_map_20002(decrypted_json)
         elif info_type == 30000:
             self.update_path_data_30000(decrypted_json)
+        elif info_type == 21011:
+            self.update_path_array_21011(decrypted_json)
 
     def update_status_20001(self, status_data):
         self.status = status_data['data']
+        self.update_robot_map = True
+        self._call_listners()
 
     def update_map_20002(self, map_data):
         self.map_data = map_data['data']
+        self.update_map = True
 
     def update_path_data_30000(self, path_data):
         self.path_data = path_data['data']
+
+    def update_path_array_21011(self, path_data):
+        data_field = path_data['data']
+        new_path_positions = data_field['posArray']
+        path_id = data_field['pathID']
+        start_pos = data_field['startPos']
+        if 1 > len(new_path_positions):
+            return
+        if path_id != self.current_path_id:
+            self.path_position_array.clear()
+            self.current_path_id = path_id
+        if len(self.path_position_array) > start_pos:
+            return
+        self.path_position_array.extend(new_path_positions)
+        self.update_robot_map = True
 
     def get_name(self):
         return self.name
@@ -264,6 +353,7 @@ class ProscenicHomeVacuum:
         }
 
         response = await self.proscenic_home.send_post_command(url, data, headers)
+        await self.update_state()
         return response
 
     async def start_deep_clean(self):
@@ -277,9 +367,10 @@ class ProscenicHomeVacuum:
         }
 
         response = await self.proscenic_home.send_post_command(url, data, headers)
+        await self.update_state()
         return response
 
-    async def clean_segment(self, comma_seperated_string_of_segment_ids):
+    async def clean_segment(self, comma_seperated_string_of_segment_ids: str):
         url = self.proscenic_home.url + '/instructions/cmd21005/' + self.serial + '?username=' + self.proscenic_home.username
         headers = {
             'host': self.proscenic_home.host_path,
@@ -290,6 +381,7 @@ class ProscenicHomeVacuum:
         }
 
         response = await self.proscenic_home.send_post_command(url, data, headers)
+        await self.update_state()
         return response
 
     async def collect_dust(self):
@@ -312,6 +404,7 @@ class ProscenicHomeVacuum:
         data = json.dumps(data)
 
         response = await self.proscenic_home.send_post_command(url, data, headers)
+        await self.update_state()
         return response
 
     async def pause_cleaning(self):
@@ -325,6 +418,7 @@ class ProscenicHomeVacuum:
         }
 
         response = await self.proscenic_home.send_post_command(url, data, headers)
+        await self.update_state()
         return response
 
     async def continue_cleaning(self):
@@ -338,6 +432,7 @@ class ProscenicHomeVacuum:
         }
 
         response = await self.proscenic_home.send_post_command(url, data, headers)
+        await self.update_state()
         return response
 
     async def return_to_dock(self):
@@ -351,6 +446,7 @@ class ProscenicHomeVacuum:
         }
 
         response = await self.proscenic_home.send_post_command(url, data, headers)
+        await self.update_state()
         return response
 
     async def proscenic_powermode(self, mode):
@@ -364,9 +460,11 @@ class ProscenicHomeVacuum:
         }
 
         response = await self.proscenic_home.send_post_command(url, data, headers)
+        await self.update_state()
         return response
 
     async def get_info(self):
+        await self.update_state()
         url = self.proscenic_home.url + '/app/cleanRobot/info'
         headers = {
             'token': self.proscenic_home.token,
@@ -379,8 +477,34 @@ class ProscenicHomeVacuum:
         response = await self.proscenic_home.send_post_command(url, data, headers)
         return response
 
+    async def get_paths(self):
+        await self.update_state()
+        if self.map_data and not self.current_path_id:
+            self.current_path_id = self.map_data['pathId']
+
+        if not self.current_path_id:
+            return
+
+        current_index = str(len(self.path_position_array))
+        url = self.proscenic_home.url + '/app/cleanRobot/21011/' + self.serial + '/' + current_index
+        headers = {
+            'host': self.proscenic_home.host_path,
+            'token': self.proscenic_home.token,
+        }
+        data = {
+            'username': self.proscenic_home.username,
+            'pathId': self.current_path_id
+        }
+
+        response = await self.proscenic_home.send_post_command(url, data, headers)
+        return response
+
     def get_map(self):
+
         if not self.map_data:
+            if self.map_bytes:
+                return self.map_bytes
+
             w, h = 429, 255
             shape = ((40, 40), (w - 10, h - 10))
 
@@ -390,75 +514,111 @@ class ProscenicHomeVacuum:
             # create rectangle image
             draw_image = ImageDraw.Draw(image)
             draw_image.rectangle(shape, fill="black")
-            img_byte_arr = io.BytesIO()
-            image.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
-            return img_byte_arr
+            # image.show()
+            self.map_bytes = self.map_image_to_bytes(image)
+            self.update_map = False
+            return self.map_bytes
 
-        return self.draw_map(
-            self.map_data['map'],
-            [self.map_data['width'], self.map_data['height']],
-            self.status['pos'],
-            self.map_data['x_min'],
-            self.map_data['y_min'],
-            self.map_data['resolution'])
+        return self.draw_map()
 
-    def draw_map(self, map_string, map_dimentions, robot_pos=None, x_min=0, y_min=0, resolution=0.05):
-        clean_map_string = map_string.replace(" ", "+")
-        decoder = base64.b64decode
-        zipped_data = decoder(clean_map_string)
-        decompressed = lz4_decompress(zipped_data, (map_dimentions[0] * map_dimentions[1]))
+    def draw_map(self):
 
-        x_min = x_min * 1000.0
-        y_min = y_min * 1000.0
-        resolution = resolution * 1000.0
+        if not self.update_map and not self.update_robot_map:
+            return self.map_bytes
 
-        image = Image.frombytes("L", (map_dimentions[0], map_dimentions[1]), decompressed)
-        image = image.convert('RGBA')
+        if self.update_map:
+            map_string = self.map_data['map']
+            map_dimensions = (self.map_data['width'], self.map_data['height'])
 
-        pixels = image.load()
-        for y in range(image.size[1]):
-            for x in range(image.size[0]):
-                if pixels[x, y] == (127, 127, 127, 255):
-                    pixels[x, y] = (0, 0, 0, 0)
-                elif pixels[x, y] == (0, 0, 0, 255):
-                    pixels[x, y] = (15, 60, 152, 255)
-                elif pixels[x, y] == (255, 255, 255, 255):
-                    pixels[x, y] = (3, 98, 142, 255)
-                elif pixels[x, y] == (1, 1, 1, 255):
-                    pixels[x, y] = (5, 153, 99, 255)
-                elif pixels[x, y] == (2, 2, 2, 255):
-                    pixels[x, y] = (9, 153, 5, 255)
-                elif pixels[x, y] == (3, 3, 3, 255):
-                    pixels[x, y] = (141, 153, 5, 255)
-                elif pixels[x, y] == (4, 4, 4, 255):
-                    pixels[x, y] = (153, 103, 5, 255)
-                elif pixels[x, y] == (5, 5, 5, 255):
-                    pixels[x, y] = (153, 40, 5, 255)
-                elif pixels[x, y] == (6, 6, 6, 255):
-                    pixels[x, y] = (153, 5, 58, 255)
-                elif pixels[x, y] == (7, 7, 7, 255):
-                    pixels[x, y] = (151, 5, 153, 255)
-                elif pixels[x, y] == (8, 8, 8, 255):
-                    pixels[x, y] = (96, 5, 153, 255)
-                elif pixels[x, y] == (9, 9, 9, 255):
-                    pixels[x, y] = (40, 5, 153, 255)
+            clean_map_string = map_string.replace(" ", "+")
+            decoder = base64.b64decode
+            zipped_data = decoder(clean_map_string)
+            decompressed = lz4_decompress(zipped_data, (map_dimensions[0] * map_dimensions[1]))
 
+            self.pil_map_image = Image.frombytes("L", map_dimensions, decompressed)
+            self.pil_map_image = self.pil_map_image.convert("RGBA")
+            pixels = self.pil_map_image.load()
+            for y in range(self.pil_map_image.size[1]):
+                for x in range(self.pil_map_image.size[0]):
+                    if pixels[x, y] == (127, 127, 127, 255):
+                        pixels[x, y] = (0, 0, 0, 0)
+                    elif pixels[x, y] == (0, 0, 0, 255):
+                        pixels[x, y] = (15, 60, 152, 255)
+                    elif pixels[x, y] == (255, 255, 255, 255):
+                        pixels[x, y] = (3, 98, 142, 255)
+                    elif pixels[x, y] == (1, 1, 1, 255):
+                        pixels[x, y] = (5, 153, 99, 255)
+                    elif pixels[x, y] == (2, 2, 2, 255):
+                        pixels[x, y] = (9, 153, 5, 255)
+                    elif pixels[x, y] == (3, 3, 3, 255):
+                        pixels[x, y] = (141, 153, 5, 255)
+                    elif pixels[x, y] == (4, 4, 4, 255):
+                        pixels[x, y] = (153, 103, 5, 255)
+                    elif pixels[x, y] == (5, 5, 5, 255):
+                        pixels[x, y] = (153, 40, 5, 255)
+                    elif pixels[x, y] == (6, 6, 6, 255):
+                        pixels[x, y] = (153, 5, 58, 255)
+                    elif pixels[x, y] == (7, 7, 7, 255):
+                        pixels[x, y] = (151, 5, 153, 255)
+                    elif pixels[x, y] == (8, 8, 8, 255):
+                        pixels[x, y] = (96, 5, 153, 255)
+                    elif pixels[x, y] == (9, 9, 9, 255):
+                        pixels[x, y] = (40, 5, 153, 255)
+
+        image = self.pil_map_image.copy()
         draw_image = ImageDraw.Draw(image)
-        if robot_pos:
-            robot_pos_x = round((robot_pos[0] - x_min) / resolution)
-            robot_pos_y = round((robot_pos[1] - y_min) / resolution)
-            draw_image.ellipse(
-                (
-                    (robot_pos_x - 3, robot_pos_y - 3),
-                    (robot_pos_x + 3, robot_pos_y + 3)
+        path_count = len(self.path_position_array)
+
+        robot_pos = self.status['pos']
+        x_min = self.map_data['x_min']
+        y_min = self.map_data['y_min']
+        resolution: float = self.map_data['resolution']
+
+        if path_count > 0:
+            shape = []
+            for index, path_point in list(enumerate(self.path_position_array)):
+
+                this_point = self.vacuum_space_to_map_space(
+                    path_point,
+                    x_min,
+                    y_min,
+                    resolution
                 )
-                ,
-                fill="white"
+
+                shape.append((this_point[0], this_point[1]))
+            draw_image.line(shape, fill="white", width=1, joint='curve')
+
+        map_robot_pos = self.vacuum_space_to_map_space(robot_pos, x_min, y_min, resolution)
+        draw_image.ellipse(
+            (
+                (map_robot_pos[0] - 4, map_robot_pos[1] - 4),
+                (map_robot_pos[0] + 4, map_robot_pos[1] + 4)
             )
+            ,
+            fill="black",
+            outline ="white"
+        )
 
         image = image.transpose(Image.FLIP_TOP_BOTTOM)
+        image.show()
+        self.map_bytes = self.map_image_to_bytes(image)
+        self.update_map = False
+        self.update_robot_map = False
+        return self.map_bytes
+
+    @staticmethod
+    def vacuum_space_to_map_space(position, x_min: float, y_min: float, resolution: float):
+        local_x_min = x_min * 1000.0
+        local_y_min = y_min * 1000.0
+        local_resolution = resolution * 1000.0
+        new_position = [0, 0]
+        new_position[0] = round((position[0] - local_x_min) / local_resolution)
+        new_position[1] = round((position[1] - local_y_min) / local_resolution)
+        return new_position
+
+    @staticmethod
+    def map_image_to_bytes(pil_image):
         img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='PNG')
+        pil_image.save(img_byte_arr, format='PNG')
         img_byte_arr = img_byte_arr.getvalue()
         return img_byte_arr

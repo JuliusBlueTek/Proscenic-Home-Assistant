@@ -19,8 +19,6 @@ from .proscenicapis import *
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=90)
-
 async def async_setup_entry(
     hass: core.HomeAssistant,
     config_entry: config_entries.ConfigEntry,
@@ -33,8 +31,9 @@ async def async_setup_entry(
 
 class ProscenicVacuum(VacuumEntity):
     """Ecovacs Vacuums such as Deebot."""
-    _attr_should_poll = True
-    _attr_fan_speed_list = ['quiet', 'strong']
+    _attr_should_poll = False
+    _attr_fan_speed_list = ['quiet', 'auto', 'strong']
+    _attr_fan_speed = 'auto'
     _attr_supported_features = (
         VacuumEntityFeature.TURN_ON
         | VacuumEntityFeature.TURN_OFF
@@ -53,6 +52,7 @@ class ProscenicVacuum(VacuumEntity):
         self.vacuum = proscenic_home.vacuums[0]
         self._attr_name = self.vacuum.get_name()
         self._error = None
+        self.vacuum.subcribe(lambda vacuum: self.schedule_update_ha_state(True))
 
     async def async_added_to_hass(self) -> None:
         """Set up the event listeners now that hass is ready."""
@@ -62,20 +62,17 @@ class ProscenicVacuum(VacuumEntity):
         if not await self.vacuum.connect():
             await self.proscenic_home.connect()
         await self.vacuum.update_state()
-        if self.vacuum.status and 'mode' in self.vacuum.status:
+        if not self.vacuum.status:
+            return
+        if 'mode' in self.vacuum.status:
             self._attr_status = self.vacuum.status['mode']
-        if self.vacuum.status and 'elec' in self.vacuum.status:
+        if 'elec' in self.vacuum.status:
             self._attr_battery_level = self.vacuum.status['elec']
-
-    def on_error(self, error):
-        """Handle an error event from the robot.
-        This will not change the entity's state. If the error caused the state
-        to change, that will come through as a separate on_status event
-        """
-        if error == "no_error":
-            self._error = None
-        else:
-            self._error = error
+        if 'workNoisy' in self.vacuum.status:
+            self._attr_fan_speed = self.vacuum.status['workNoisy']
+        if 'errorState' in self.vacuum.status:
+            if len(self.vacuum.status['errorState']) > 0:
+                self._error = self.vacuum.status['errorState'][0]
 
     @property
     def unique_id(self) -> str:
@@ -85,16 +82,12 @@ class ProscenicVacuum(VacuumEntity):
     @property
     def is_on(self) -> bool:
         """Return true if vacuum is currently cleaning."""
-        if self.vacuum.status and 'mode' in self.vacuum.status:
-            return self.vacuum.status['mode'] == 'sweep'
-        return False
+        return self._attr_status == 'sweep'
 
     @property
     def is_charging(self) -> bool:
         """Return true if vacuum is currently charging."""
-        if self.vacuum.status and 'mode' in self.vacuum.status:
-            return self.vacuum.status['mode'] == 'charge'
-        return True
+        return self._attr_status == 'charge'
 
     @property
     def status(self) -> str | None:
@@ -116,24 +109,18 @@ class ProscenicVacuum(VacuumEntity):
     @property
     def fan_speed(self) -> str | None:
         """Return the fan speed of the vacuum cleaner."""
-        if self.vacuum.status and 'workNoisy' in self.vacuum.status:
-            return self.vacuum.status['workNoisy']
-        return 'strong'
+        return super().fan_speed
 
     async def async_set_fan_speed(self, fan_speed: str, **kwargs: Any) -> None:
         """Set fan speed."""
         await self.vacuum.proscenic_powermode(fan_speed)
-        self.vacuum.status['workNoisy'] = fan_speed
-        self.schedule_update_ha_state()
 
     async def async_start(self, **kwargs: Any) -> None:
         """Stop the vacuum cleaner."""
-        if self.vacuum.status['mode'] == 'pause':
+        if self._attr_status == 'pause':
             await self.vacuum.continue_cleaning()
         else:
             await self.vacuum.start_clean()
-        self.vacuum.status['mode'] = 'sweep'
-        self.schedule_update_ha_state()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the vacuum on and start cleaning."""
@@ -142,15 +129,13 @@ class ProscenicVacuum(VacuumEntity):
     async def async_pause(self, **kwargs: Any) -> None:
         """Pause the vacuum cleaner."""
         await self.vacuum.pause_cleaning()
-        self.vacuum.status['mode'] = 'pause'
-        self.schedule_update_ha_state()
 
     async def async_stop(self, **kwargs: Any) -> None:
         """Stop the vacuum cleaner."""
         await self.async_pause()
 
     async def async_start_pause(self, **kwargs: Any) -> None:
-        mode = self.vacuum.status['mode']
+        mode = self._attr_status
         if mode == None or mode == '' or mode == 'pause':
             await self.async_start()
         elif mode == 'sweep':
@@ -159,8 +144,6 @@ class ProscenicVacuum(VacuumEntity):
     async def async_return_to_base(self, **kwargs: Any) -> None:
         """Stop the vacuum cleaner."""
         await self.vacuum.return_to_dock()
-        self.vacuum.status['mode'] = 'returning home'
-        self.schedule_update_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the vacuum off stopping the cleaning and returning home."""
@@ -178,7 +161,6 @@ class ProscenicVacuum(VacuumEntity):
             string_list = ','.join(str(e) for e in duplicates_removed)
             await self.vacuum.clean_segment(string_list)
             self.vacuum.status['mode'] = 'sweep'
-            self.schedule_update_ha_state()
             
 
 
