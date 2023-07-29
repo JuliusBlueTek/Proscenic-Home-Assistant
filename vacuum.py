@@ -12,7 +12,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.icon import icon_for_battery_level
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.const import CONF_USERNAME, CONF_API_TOKEN, CONF_DEVICES, CONF_PASSWORD
 
 from .const import DOMAIN, PROSCENICHOME
 from .proscenicapis import *

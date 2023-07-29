@@ -3,7 +3,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from homeassistant import config_entries, core
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD, CONF_API_TOKEN, CONF_DEVICES
+from homeassistant.const import CONF_USERNAME, CONF_PASSWORD, CONF_API_TOKEN, CONF_DEVICES, CONF_LOCATION
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
@@ -20,7 +20,8 @@ _LOGGER = logging.getLogger(__name__)
 AUTH_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): cv.string,
-        vol.Required(CONF_PASSWORD): cv.string
+        vol.Required(CONF_PASSWORD): cv.string,
+        vol.Required(CONF_LOCATION, default="US",): vol.In(["US", "EU", "CN"])
     }
 )
 
@@ -39,7 +40,7 @@ class ProscenicConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self.data = {}
                 self.data[CONF_USERNAME] = user_input[CONF_USERNAME]
                 self.data[CONF_PASSWORD] = user_input[CONF_PASSWORD]
-                self.data[CONF_API_TOKEN] = proscenic_home.token
+                self.data[CONF_LOCATION] = user_input[CONF_LOCATION]
                 return self.async_create_entry(title="Proscenic", data=self.data)
 
 

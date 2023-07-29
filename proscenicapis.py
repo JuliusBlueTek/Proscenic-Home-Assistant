@@ -23,17 +23,25 @@ from ._block import decompress as lz4_decompress
 US_HOST_PATH = 'mobile.proscenic.tw'
 EU_HOST_PATH = 'mobile.proscenic.com.de'
 CN_HOST_PATH = 'mobile.proscenic.cn'
-ROOT_URL = 'https://' + US_HOST_PATH
 VACUUM_TYPE = 'CleanRobot'
 
 EOL = '#\t#'
 
 
 class ProscenicHome:
-    def __init__(self, username, password, token=None, host_path=US_HOST_PATH):
+    def __init__(self, username, password, host_path=US_HOST_PATH):
         self.username = username
         self.password = password
-        self.token = token
+        self.token = None
+        if host_path == "US":
+            host_path = US_HOST_PATH
+        elif host_path == "EU":
+            host_path = EU_HOST_PATH
+        elif host_path == "CN":
+            host_path = CN_HOST_PATH
+        else:
+            host_path = US_HOST_PATH
+
         self.host_path = host_path
         self.url = 'https://' + self.host_path
         self.vacuums = []  # type: list[ProscenicHomeVacuum]

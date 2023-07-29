@@ -3,7 +3,7 @@ import asyncio
 import logging
 
 from homeassistant import config_entries, core
-from homeassistant.const import CONF_USERNAME, CONF_API_TOKEN, CONF_DEVICES, CONF_PASSWORD
+from homeassistant.const import CONF_USERNAME, CONF_DEVICES, CONF_PASSWORD, CONF_LOCATION
 
 from .const import DOMAIN, PROSCENICHOME
 from .proscenicapis import *
@@ -18,7 +18,7 @@ async def async_setup_entry(
     hass_data = dict(config_entry.data)
     hass.data[DOMAIN][config_entry.entry_id] = hass_data
 
-    proscenic_home = ProscenicHome(config_entry.data[CONF_USERNAME], config_entry.data[CONF_PASSWORD], None)
+    proscenic_home = ProscenicHome(config_entry.data[CONF_USERNAME], config_entry.data[CONF_PASSWORD], config_entry.data[CONF_LOCATION])
     await proscenic_home.connect()
     hass.data[DOMAIN][config_entry.entry_id]['device'] = proscenic_home
 
