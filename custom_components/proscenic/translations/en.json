@@ -1,8 +1,7 @@
 {
   "config": {
     "error": {
-      "auth": "The auth token provided is not valid.",
-      "invalid_path": "The path provided is not valid. Should be in the format `user/repo-name`."
+      "auth": "The auth token provided is not valid."
     },
     "step": {
       "user": {
