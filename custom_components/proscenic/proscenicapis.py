@@ -240,7 +240,7 @@ class ProscenicHomeVacuum:
                     continue
             except Exception as ex:
                 writer.close()
-                if not self.connect():
+                if not await self.connect():
                     await self.proscenic_home.get_token()
                     await self.update_sockets_ip()
                     await asyncio.sleep(60)

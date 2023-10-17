@@ -7,7 +7,7 @@ from typing import Any
 
 import async_timeout
 
-from homeassistant.components.vacuum import StateVacuumEntity, VacuumEntityFeature
+from homeassistant.components.vacuum import StateVacuumEntity, VacuumEntityFeature, STATE_CLEANING, STATE_DOCKED, STATE_IDLE, STATE_PAUSED, STATE_RETURNING
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.icon import icon_for_battery_level
@@ -41,6 +41,7 @@ class ProscenicVacuum(StateVacuumEntity):
         | VacuumEntityFeature.FAN_SPEED
         | VacuumEntityFeature.BATTERY
         | VacuumEntityFeature.SEND_COMMAND
+        | VacuumEntityFeature.STATE
     )
 
     def __init__(self, proscenic_home) -> None:
@@ -50,6 +51,7 @@ class ProscenicVacuum(StateVacuumEntity):
         self._attr_name = self.vacuum.get_name()
         self._error = None
         self.vacuum.subcribe(lambda vacuum: self.schedule_update_ha_state(True))
+        self._attr_state = STATE_IDLE
 
     async def async_added_to_hass(self) -> None:
         """Set up the event listeners now that hass is ready."""
@@ -70,6 +72,13 @@ class ProscenicVacuum(StateVacuumEntity):
         if 'errorState' in self.vacuum.status:
             if len(self.vacuum.status['errorState']) > 0:
                 self._error = self.vacuum.status['errorState'][0]
+        
+        if self.is_on:
+            self._attr_state = STATE_CLEANING
+        elif self.is_charging:
+            self._attr_state = STATE_DOCKED
+        else:
+            self._attr_state = STATE_IDLE
 
     @property
     def unique_id(self) -> str:
@@ -107,6 +116,10 @@ class ProscenicVacuum(StateVacuumEntity):
     def fan_speed(self) -> str | None:
         """Return the fan speed of the vacuum cleaner."""
         return super().fan_speed
+
+    @property
+    def state(self):
+        return self._attr_state
 
     async def async_pause(self, **kwargs: Any) -> None:
         """Pause the vacuum cleaner."""
